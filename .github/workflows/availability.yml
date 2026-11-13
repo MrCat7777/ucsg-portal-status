@@ -1,0 +1,56 @@
+name: Check public portal availability
+
+on:
+  schedule:
+    - cron: '2-57/5 * * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/availability.yml']
+
+permissions: {}
+
+concurrency:
+  group: portal-availability
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Verify application and sign-in page
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import time
+          import urllib.error
+          import urllib.request
+          from datetime import datetime, timezone
+
+          base = 'https://ucsg-calidad.onrender.com'
+          deadline = time.monotonic() + 135
+          results = []
+          for path in ['/up', '/evidencias/ingresar']:
+              for attempt in range(2):
+                  started = time.monotonic()
+                  try:
+                      remaining = deadline - started
+                      if remaining < 1:
+                          raise TimeoutError('Availability check exceeded its time budget')
+                      request = urllib.request.Request(base + path, headers={'User-Agent': 'UCSG-Portal-Availability/1.0'})
+                      with urllib.request.urlopen(request, timeout=min(65, remaining)) as response:
+                          body = response.read(262144)
+                          if response.status != 200:
+                              raise RuntimeError('Unexpected HTTP status')
+                          if path.endswith('/ingresar') and not (b'name="email"' in body and b'name="password"' in body):
+                              raise RuntimeError('The application sign-in form is unavailable')
+                      results.append({'path': path, 'http': 200, 'seconds': round(time.monotonic() - started, 2)})
+                      break
+                  except (urllib.error.URLError, TimeoutError, RuntimeError) as error:
+                      if attempt == 1:
+                          raise RuntimeError('Public portal check failed for ' + path) from error
+                      time.sleep(3)
+          print(json.dumps({'checked_at': datetime.now(timezone.utc).isoformat(), 'checks': results}))
+          PY
